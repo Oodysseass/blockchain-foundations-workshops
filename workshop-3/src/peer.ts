@@ -1,7 +1,8 @@
 import type { Socket } from 'net'
 import canonicalize from 'canonicalize'
+import { objectManager } from './object'
 import { MessageSchema } from './types'
-import type { Message, HelloMessage, TextMessage } from './types'
+import type { NetworkObject, Message, HelloMessage, TextMessage, GetObjectMessage, ObjectMessage } from './types'
 
 export default class Peer {
     socket: Socket
@@ -10,6 +11,8 @@ export default class Peer {
     handlers: Record<Message['type'], (message: Message) => Promise<void>> = {
         hello: async (m) => await this.handleHello(m as HelloMessage),
         text: async (m) => await this.handleText(m as TextMessage),
+        getobject: async (m) => await this.handleGetObject(m as GetObjectMessage),
+        object: async (m) => await this.handleObject(m as ObjectMessage),
     }
 
     constructor(socket: Socket) {
@@ -81,11 +84,55 @@ export default class Peer {
         this.sendMessage({ type: 'error', description })
     }
 
+    sendObject(object: NetworkObject) {
+        const message = {
+            type: 'object',
+            object
+        }
+        this.sendMessage(message)
+    }
+
+    sendGetObject(objectid: string) {
+        const message = {
+            type: 'getobject',
+            objectid
+        }
+        this.sendMessage(message)
+    }
+
     async handleHello(message: HelloMessage) {
         console.log(`[${this.id}]: Hello from ${message.agent}`)
     }
 
     async handleText(message: TextMessage) {
         console.log(`[${this.id}]: Text: ${message.text}`)
+    }
+
+    async handleGetObject(message: GetObjectMessage) {
+        try {
+            const object = await objectManager.get(message.objectid)
+            this.sendObject(object)
+        } catch {
+            console.error(`Did not found object ${message.objectid}`)
+        }
+    }
+
+    async handleObject(message: ObjectMessage) {
+        const object = message.object
+
+        try {
+            await Promise.all(
+                object.deps.map(dep => {
+                    objectManager.findObject(dep, (id) => this.sendGetObject(id))
+                }
+                ))
+        } catch (error) {
+            console.error(`Failed to resolve depedencies ${error}`)
+            this.sendError(`Failed to resolve`)
+            return
+        }
+
+        const id = await objectManager.put(object)
+        console.log(`Saved object ${id}`)
     }
 }
